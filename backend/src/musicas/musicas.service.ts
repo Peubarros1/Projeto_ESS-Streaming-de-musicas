@@ -6,6 +6,7 @@ import { NotFoundError } from 'rxjs';
 import { Playback } from '../playback/entities/playback.entity';
 import { PlaybackService } from '../playback/playback.service';
 
+
 @Injectable()
 export class MusicasService {
 

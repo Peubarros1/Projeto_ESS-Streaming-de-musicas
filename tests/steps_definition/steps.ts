@@ -17,6 +17,14 @@ interface Musica {
   reproducoes: number;
 }
 
+interface Playlist {
+  id: number;
+  nome: string;
+  descricao?: string;
+  publica?: boolean;
+  ownerLogin: string;
+}
+
 // =========================================================================
 // Estado do cenário
 // =========================================================================
@@ -49,6 +57,13 @@ let recomendacoes:    Musica[]      = [];
 // Ranking Em Alta — mantido em memória para cenários de empate/ultrapassagem
 let rankingEmAlta: Musica[] = [];
 
+// Playlists
+let playlists: Playlist[] = [];
+let playlistMensagem: string | null = null;
+let playlistNomeDigitado: string | null = null;
+let playlistDescricaoDigitada: string | null = null;
+let playlistPublicaDigitada: boolean | null = null;
+
 // =========================================================================
 // Helpers HTTP
 // =========================================================================
@@ -79,6 +94,23 @@ async function post(path: string, body: any, autenticado = false): Promise<any> 
   return response.json();
 }
 
+async function del(path: string, autenticado = false): Promise<any> {
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+  };
+  if (autenticado && token) {
+    headers["Authorization"] = `Bearer ${token}`;
+  }
+  const response = await fetch(`${BASE_URL}${path}`, {
+    method: "DELETE",
+    headers,
+  });
+  if (response.status === 204) {
+    return null;
+  }
+  return response.json();
+}
+
 // =========================================================================
 // Hook — reseta estado antes de cada cenário
 // =========================================================================
@@ -103,6 +135,11 @@ Before(function () {
   generoHistorico        = null;
   recomendacoes          = [];
   rankingEmAlta          = [];
+  playlists              = [];
+  playlistMensagem       = null;
+  playlistNomeDigitado   = null;
+  playlistDescricaoDigitada = null;
+  playlistPublicaDigitada = null;
 });
 
 // =========================================================================
@@ -113,6 +150,14 @@ Given(
   "estou logado como {string} com login {string} e senha {string}",
   async function (perfil: string, login: string, senha: string) {
     // auth ainda não implementado — simula login
+    usuarioLogado = true;
+    loginAtual    = login;
+  }
+);
+
+Given(
+  "estou logado como {string} com login {string}",
+  function (_perfil: string, login: string) {
     usuarioLogado = true;
     loginAtual    = login;
   }
@@ -137,6 +182,10 @@ Given("estou na página de busca", function () {
 });
 
 Given("estou na página {string}", function (pagina: string) {
+  paginaAtual = pagina.toLowerCase();
+});
+
+Given("o usuário está na página {string}", function (pagina: string) {
   paginaAtual = pagina.toLowerCase();
 });
 
@@ -193,6 +242,38 @@ Then("posso ver um ícone", function () {
 Then("vejo uma mensagem na parte de cima da tela: {string}", function (esperada: string) {
   assert.strictEqual(mensagemTopo, esperada, "Mensagem no topo incorreta");
 });
+
+// =========================================================================
+// 6. Playlists
+// =========================================================================
+
+When("o usuário seleciona a opção {string}", function (_opcao: string) {
+  paginaAtual = "playlists";
+  playlistMensagem = null;
+});
+
+When(
+  "o usuário preenche o nome com {string}, a descrição com {string} , a visibilidade como {string}",
+  async function (nome: string, descricao: string, visibilidade: string) {
+    playlistNomeDigitado = nome;
+    playlistDescricaoDigitada = descricao;
+    playlistPublicaDigitada = parseVisibilidade(visibilidade);
+    await tentarCriarPlaylist();
+  }
+);
+
+Then("o usuário consegue ver a playlist com o nome {string}", async function (nome: string) {
+  await carregarPlaylists();
+  const encontrada = playlists.some((p) => p.nome.toLowerCase() === nome.toLowerCase());
+  assert.ok(encontrada, `Playlist '${nome}' não encontrada`);
+});
+
+Then(
+  "eu vejo uma mensagem de sucesso{string}",
+  function (mensagem: string) {
+    assert.strictEqual(playlistMensagem, mensagem, "Mensagem incorreta");
+  }
+);
 
 // =========================================================================
 // 3. Busca — Givens
@@ -588,7 +669,12 @@ Given(
   "existem músicas do gênero {string} armazenadas no sistema que não estão presentes no meu histórico",
   async function (genero: string) {
     const resultado = await get(`/musicas?genero=${encodeURIComponent(genero)}`);
-    const fora      = resultado.filter((m: Musica) => !historicoMusicas.includes(m.titulo));
+    if (!Array.isArray(resultado)) {
+      throw new Error(
+        `Resposta inesperada da API /musicas: ${JSON.stringify(resultado)}`
+      );
+    }
+    const fora = resultado.filter((m: Musica) => !historicoMusicas.includes(m.titulo));
     assert.ok(fora.length > 0,
       `Não há músicas de '${genero}' fora do histórico no sistema`);
   }
@@ -638,4 +724,43 @@ function reordenarRanking(): void {
       ? b.reproducoes - a.reproducoes
       : a.titulo.localeCompare(b.titulo)
   );
+}
+
+async function carregarPlaylists(): Promise<void> {
+  playlists = await get("/playlists");
+}
+
+async function tentarCriarPlaylist(): Promise<void> {
+  playlistMensagem = null;
+  const nome = playlistNomeDigitado?.trim() ?? "";
+  if (!nome) {
+    playlistMensagem = "Por favor preencha o campo do nome";
+    return;
+  }
+
+  await carregarPlaylists();
+  const existente = playlists.find((p) => p.nome.toLowerCase() === nome.toLowerCase());
+  if (existente?.id) {
+    await del(`/playlists/${existente.id}`);
+    await carregarPlaylists();
+  }
+
+  const criada = await post("/playlists", {
+    nome,
+    descricao: playlistDescricaoDigitada?.trim() ?? "",
+    publica: playlistPublicaDigitada ?? true,
+    ownerLogin: loginAtual ?? "pedro123",
+  });
+
+  if (criada?.id) {
+    playlists.push(criada);
+    playlistMensagem = "playlist criada com sucesso";
+  } else {
+    await carregarPlaylists();
+  }
+}
+
+function parseVisibilidade(valor: string): boolean {
+  const normalizado = valor.trim().toLowerCase();
+  return normalizado === "publica" || normalizado === "pública";
 }
